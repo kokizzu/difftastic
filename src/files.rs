@@ -138,9 +138,27 @@ pub(crate) enum ProbableFileKind {
 }
 
 /// Do these bytes look like a binary (non-textual) format?
-pub(crate) fn guess_content(bytes: &[u8]) -> ProbableFileKind {
+pub(crate) fn guess_content(
+    bytes: &[u8],
+    path: &FileArgument,
+    binary_overrides: &[glob::Pattern],
+) -> ProbableFileKind {
+    if let FileArgument::NamedPath(path) = path {
+        let path = path.to_string_lossy();
+        for pattern in binary_overrides {
+            if pattern.matches(&path) {
+                info!(
+                    "Input file is treated as binary due to explicit override glob {}",
+                    pattern
+                );
+                return ProbableFileKind::Binary;
+            }
+        }
+    }
+
     // If the bytes are entirely valid UTF-8, treat them as a string.
     if let Ok(valid_utf8_string) = std::str::from_utf8(bytes) {
+        info!("Input file is valid UTF-8");
         return ProbableFileKind::Text(valid_utf8_string.to_owned());
     }
 
@@ -167,6 +185,7 @@ pub(crate) fn guess_content(bytes: &[u8]) -> ProbableFileKind {
         // See
         // <https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types/Common_types>
         // for a list of MIME types.
+        "application/x-archive" => return ProbableFileKind::Binary,
         "application/x-bzip" => return ProbableFileKind::Binary,
         "application/x-bzip2" => return ProbableFileKind::Binary,
         "application/x-7zip-compressed" => return ProbableFileKind::Binary,
@@ -201,11 +220,14 @@ pub(crate) fn guess_content(bytes: &[u8]) -> ProbableFileKind {
         _ => {}
     }
 
-    // If the input bytes are *almost* valid UTF-8, treat them as UTF-8.
+    // If the input bytes are *almost* valid UTF-8, treat them as
+    // UTF-8. This is helpful when the user has written a small number
+    // of bad bytes to a file. Users would still like to be able to
+    // diff these files.
     let utf8_string = String::from_utf8_lossy(bytes).to_string();
     let num_utf8_invalid = utf8_string
         .chars()
-        .take(5000)
+        .take(50000)
         .filter(|c| *c == std::char::REPLACEMENT_CHARACTER || *c == '\0')
         .count();
     if num_utf8_invalid <= 2 {
@@ -216,29 +238,16 @@ pub(crate) fn guess_content(bytes: &[u8]) -> ProbableFileKind {
         return ProbableFileKind::Text(utf8_string);
     }
 
-    // If the input bytes are *almost* valid UTF-16, treat them as
-    // UTF-16.
-    let utf16_string = String::from_utf16_lossy(&u16_values);
-    let num_utf16_invalid = utf16_string
-        .chars()
-        .take(5000)
-        .filter(|c| *c == std::char::REPLACEMENT_CHARACTER || *c == '\0')
-        .count();
-    if num_utf16_invalid <= 1 {
-        info!(
-            "Input file is mostly valid UTF-16 (invalid characters: {})",
-            num_utf16_invalid
-        );
-        return ProbableFileKind::Text(utf16_string);
-    }
+    // Deliberately don't check for mostly-valid UTF-16 due to the
+    // high UTF-16 false positive rate on binary files.
 
-    // If the input bytes are valid Windows-1252 (an extension of
+    // If the input bytes are mostly valid Windows-1252 (an extension of
     // ISO-8859-1 aka Latin 1), treat them as such.
     let (latin1_str, _encoding, saw_malformed) = encoding_rs::WINDOWS_1252.decode(bytes);
     if !saw_malformed {
-        let num_null = utf16_string
+        let num_null = latin1_str
             .chars()
-            .take(5000)
+            .take(50000)
             .filter(|c| *c == std::char::REPLACEMENT_CHARACTER || *c == '\0')
             .count();
         if num_null <= 1 {
@@ -339,6 +348,10 @@ pub(crate) fn relative_paths_in_either(lhs_dir: &Path, rhs_dir: &Path) -> Vec<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn guess_content(bytes: &[u8]) -> ProbableFileKind {
+        super::guess_content(bytes, &FileArgument::Stdin, &[])
+    }
 
     #[test]
     fn test_plaintext_is_text() {
