@@ -16,6 +16,9 @@ Substantially improved parsing for Perl.
 Improved parsing for Clojure, Common Lisp, CSS, Dart, Erlang, F#, OCaml, Python,
 Rust, Scala, TypeScript and VHDL.
 
+Removed support for Hack, as the upstream parser is no longer
+maintained. `.php` files starting with `<?hh` are now treated as text.
+
 ### File Detection
 
 Difftastic now considers `.gitattributes` when deciding if a file is
